@@ -1,0 +1,370 @@
+---
+title: "Big Mart Sales Prediction"
+author: "LuoYiCheng"
+date: "2021/11/14"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+#Loading Packages
+x <- c("data.table", "dplyr", "ggplot2", "xgboost","caret","corrplot")
+lapply(x, library, character.only = TRUE)
+
+#Loading Data
+train <- fread("C:/Users/Yicheng/Desktop/NTU/Analytics Vidhya/Big Mart Sales Prediction/train_v9rqX0R.csv")
+test <- fread("C:/Users/Yicheng/Desktop/NTU/Analytics Vidhya/Big Mart Sales Prediction/test_AbJTz2l.csv")
+submission <- fread("C:/Users/Yicheng/Desktop/NTU/Analytics Vidhya/Big Mart Sales Prediction/sample_submission_8RXa3c6.csv")
+```
+
+```{r}
+#Structure of data
+str(train)
+
+#combine Train&Test
+combine <- rbind(train, test ,fill = T)
+```
+
+
+#【EDA】
+```{r}
+#Our Target Variable: right skewd variable, so we need some transformation to treat its skewness
+ggplot(train) + geom_histogram(aes(x = Item_Outlet_Sales), binwidth = 500, fill = "darkblue")
+```
+```{r}
+#Indenpend variable (Numeric)
+ggplot(combine) + geom_histogram(aes(x = Item_Weight), binwidth = 0.5, fill = "red")
+ggplot(combine) + geom_histogram(aes(x = Item_Visibility), binwidth = 0.005, fill = "darkblue")
+ggplot(combine) + geom_histogram(aes(x = Item_MRP), binwidth = 1, fill = "orange") + scale_x_continuous(breaks = seq(0,400,10))
+```
+
+```{r}
+#Indenpend variable (Categorical)
+ggplot(combine %>% 
+        group_by(Item_Fat_Content) %>%
+        summarise(count = n())
+         ) + 
+  geom_bar(aes(Item_Fat_Content,count), stat ="identity", fill = "coral1") 
+#same with 
+#ggplot(combine) + geom_bar(aes(x = Item_Fat_Content), fill ="coral1")
+
+#將相同意義的類別統一名稱
+combine[which(combine$Item_Fat_Content == "LF"),"Item_Fat_Content"] <- "Low Fat"
+combine[which(combine$Item_Fat_Content == "low fat"),"Item_Fat_Content"] <- "Low Fat"
+combine[which(combine$Item_Fat_Content == "reg"),"Item_Fat_Content"] <- "Regular"
+
+#Other Variable
+p_ItemType <- ggplot(combine %>% 
+        group_by(Item_Type) %>%
+        summarise(count = n())) + 
+  geom_bar(aes(reorder(Item_Type,count), count), stat ="identity", fill = "coral1") +
+  xlab("") +
+  geom_label(aes(x = Item_Type, y = count, label = count), vjust = 0.5) +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1)) +
+  ggtitle("Item_Type")
+
+p_Outlet_Identifier <- ggplot(combine %>% 
+        group_by(Outlet_Identifier) %>%
+        summarise(count = n())) + 
+  geom_bar(aes(Outlet_Identifier, count), stat ="identity", fill = "coral1") +
+  xlab("") +
+  geom_label(aes(x = Outlet_Identifier , y = count, label = count), vjust = 0.5) +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1)) +
+  ggtitle("Outlet_Identifier")
+
+p_Outlet_Size <- ggplot(combine %>% 
+        group_by(Outlet_Size) %>%
+        summarise(count = n())) + 
+  geom_bar(aes(Outlet_Size, count), stat ="identity", fill = "coral1") +
+  xlab("") +
+  geom_label(aes(x = Outlet_Size , y = count, label = count), vjust = 0.5) +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1)) +
+  ggtitle("Outlet_Size")
+
+library(cowplot)
+second_row = plot_grid(p_Outlet_Identifier, p_Outlet_Size, nrow = 1)
+plot_grid(p_ItemType, second_row, ncol = 1)
+#We found that there are 4016 observations in Outlet_Size's plot is blank or missing! So we need to check for this in bivariate analysis to substitute the missing value.
+
+p_Outlet_Establishment_Year <- ggplot(combine %>% 
+        group_by(Outlet_Establishment_Year) %>%
+        summarise(count = n())) + 
+  geom_bar(aes(factor(Outlet_Establishment_Year), count), stat ="identity", fill = "seagreen") +
+  xlab("") +
+  geom_label(aes(x = factor(Outlet_Establishment_Year) , y = count, label = count), vjust = 0.5) +
+  theme(axis.text.x = element_text(size = 8, color = "black")) +
+  ggtitle("Outlet_Establishment_Year")
+
+p_Outlet_Type <- ggplot(combine %>% 
+        group_by(Outlet_Type) %>%
+        summarise(count = n())) + 
+  geom_bar(aes(Outlet_Type, count), stat ="identity", fill = "coral1") +
+  xlab("") +
+  geom_label(aes(x = Outlet_Type , y = count, label = count), vjust = 0.5) +
+  theme(axis.text.x = element_text(size = 6, color = "black")) +
+  ggtitle("Outlet_Type")
+plot_grid(p_Outlet_Establishment_Year, p_Outlet_Type, nrow = 1)
+
+```
+
+```{R}
+#Target variable VS Indepenent Numerical Variables
+#Item_Weight VS Item_Outlet_Sales
+p_Weight_Sales <- ggplot(train) +
+  geom_point(aes(x = Item_Weight, y = Item_Outlet_Sales), 
+             color = "deeppink", 
+             alpha = 2) 
+
+#Item_Visibility VS Item_Outlet_Sales
+p_Visibility_Sales <- ggplot(train) +
+  geom_point(aes(x = Item_Visibility, y = Item_Outlet_Sales), 
+             color = "deeppink", 
+             alpha = 2) 
+#Item_MRP VS Item_Outlet_Sales
+p_MRP_Sales <- ggplot(train) +
+  geom_point(aes(x = Item_MRP, y = Item_Outlet_Sales), 
+             color = "deeppink", 
+             alpha = 2) 
+second_row = plot_grid(p_Visibility_Sales, p_MRP_Sales, nrow = 1)
+plot_grid(p_Weight_Sales, second_row, ncol = 1)
+
+```
+```{R}
+train = combine[1:nrow(train),]
+#Target variable VS Indepenent Categorical Variables
+#Item_Type VS Item_Outlet_Sales
+p_Type_Sales <- ggplot(train) +
+  geom_violin(aes(x = Item_Type, y = Item_Outlet_Sales), fill = "chocolate") +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1))
+
+#Item_Fat_Content VS Item_Outlet_Sales
+p_Fat_Content_Sales <- ggplot(train) +
+  geom_violin(aes(x = Item_Fat_Content, y = Item_Outlet_Sales), fill = "chocolate") +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1))
+
+#Outlet_Identifier VS Item_Outlet_Sales
+p_Outlet_Identifier_Sales <- ggplot(train) +
+  geom_violin(aes(x = Outlet_Identifier, y = Item_Outlet_Sales), fill = "chocolate") +
+  theme(axis.text.x = element_text(color = "black", angle = 45, hjust = 1))
+
+second_row = plot_grid(p_Fat_Content_Sales, p_Outlet_Identifier_Sales, nrow = 1)
+plot_grid(p_Type_Sales, second_row, ncol = 1)
+```
+```{R}
+#Small的分配形狀跟Blank category的非常相近，因此在這邊我們可以考慮用Small代替空值
+ggplot(train) +
+  geom_violin(aes(x = Outlet_Size, y = Item_Outlet_Sales), fill = "blue")
+
+#Outlet_Location_Type VS Item_Outlet_Sales
+ggplot(train) +
+  geom_violin(aes(x = Outlet_Location_Type, y = Item_Outlet_Sales), fill = "blue")
+#Tier1跟Tier3分配較相似
+
+#Outlet_Type VS Item_Outlet_Sales
+ggplot(train) +
+  geom_violin(aes(x = Outlet_Type, y = Item_Outlet_Sales), fill = "blue")
+#Grocery Store的分配明顯集中在低銷售
+```
+
+#【Missing Value Treatment】
+##三種處理方式
+###1.直接把row刪除 -> 可能把有用的資訊也一併移除了
+###2.用Medien/Mode/Mean去取代
+###3.把包含**缺失值**的欄位當成預測欄位，先對這個欄位進行預測後填入。
+```{r}
+
+sum(is.na(combine$Item_Weight))
+#用同類產品的平均重量去取代Item_Weight的NA值
+missing_index = which(is.na(combine$Item_Weight))
+
+for (i in missing_index){
+  item = combine$Item_Identifier[i]
+  combine$Item_Weight[i] = 
+    mean(combine$Item_Weight[combine$Item_Identifier == item], na.rm = T)
+}
+#See the NA value
+sum(is.na(combine$Item_Weight))
+```
+
+```{R}
+#取代Item_Visibility variable中的*0*值
+ggplot(combine) +
+  geom_histogram(aes(x = Item_Visibility), bins = 100) #觀察出等於0的值非常的多
+
+zero_index = which(combine$Item_Visibility == 0)
+
+for (i in zero_index){
+  item = combine$Item_Identifier[i]
+  combine$Item_Visibility[i] = 
+    mean(combine$Item_Visibility[combine$Item_Identifier == item], na.rm = T)
+}
+
+ggplot(combine) +
+  geom_histogram(aes(x = Item_Visibility), bins = 100)
+```
+
+#【Feature Engineering】  
+##大多數情況，我們獲得的變數可能無法充足地提供我們進行預測，因此我們必須自己創造新的變數來改善模型的表現
+```{R}
+#Create a new variable 'Item_Type_New'
+perishable = c("Dairy", "Breads", "Breakfast", "Fruits and Vegetables", "Meat", "Seafood")
+non_perishable = c("Baking Goods", "Canned", "Frozen Foods", "Hard Drinks", "Health and Hygiene", "Household", "Soft Drinks")
+
+combine$Item_Type_New <- ifelse(combine$Item_Type %in% perishable, "perishable", ifelse(combine$Item_Type %in% non_perishable, "non_perishable", "not_sure"))
+
+#
+table(combine$Item_Type, substr(combine$Item_Identifier, 1, 2))
+combine$Item_category <- substr(combine$Item_Identifier, 1, 2)
+```
+
+```{R}
+#因為非食用性沒辦法歸類在低脂，因此要修改
+combine$Item_Fat_Content[combine$Item_category == "NC"] <- "Non-Edible"
+
+#新增營運年數
+combine$Outlet_Year <- 2013 - combine$Outlet_Establishment_Year
+combine$Outlet_Establishment_Year <- as.factor(combine$Outlet_Establishment_Year)
+
+#價格/單位重量
+combine$price_per_unit_wt <- combine$Item_MRP / combine$Item_Weight
+
+#MRP有四個峰態因此我們為不同分配創造變數
+combine[, Item_MRP_clusters 
+        := ifelse(Item_MRP < 69, "1st",
+                ifelse(Item_MRP >= 69 & Item_MRP < 136, "2nd", 
+                      ifelse(Item_MRP >= 136 & Item_MRP < 203, "3rd", "4th")))]
+
+```
+#【Encoding Category Variable】   
+```{R}
+#Label encoding
+combine[, Outlet_Size_num := ifelse(Outlet_Size == "Small", 0,
+                                    ifelse(Outlet_Size == "Medium",1 ,2))]
+combine[, Outlet_Location_Type_num := 
+          ifelse(Outlet_Location_Type == "Tier 3", 0,
+                 ifelse(Outlet_Location_Type == "Tier 2", 1, 2))]
+#移除原本的變數
+combine[, c("Outlet_Size", "Outlet_Location_Type") := NULL]
+
+
+#one-hot encoding
+ohe = dummyVars("~.", data = combine[, -c("Item_Identifier", "Outlet_Establishment_Year", "Item_Type")], fullRank = T)
+ohe_df = data.table(predict(ohe, combine[, -c("Item_Identifier", "Outlet_Establishment_Year", "Item_Type")]))
+combine = cbind(combine[,"Item_Identifier"], ohe_df)
+
+```
+#【Data Preprocessing】  
+##Removing Skewness  
+###我們會傾向把具有峰態的變數透過開平方根、次方、取對數的方法轉成近似常態的分布，因為許多機器學習的演算法都假設變數為常態分佈   
+```{R}
+combine[, Item_Visibility := log(Item_Visibility + 1)] # log + 1 to avoid division by zero
+combine[, price_per_unit_wt := log(price_per_unit_wt + 1)]
+
+```
+##Scaling numerical predictors
+###標準化
+```{R}
+
+num_vars = which(sapply(combine, is.numeric)) #找出數值變數
+num_vars_names = names(num_vars)
+combine_numeric = combine[,  setdiff(num_vars_names, "Item_Outlet_Sales"), with = F] #把目標變數Sale挑選掉
+
+prep_num = preProcess(combine_numeric, method=c("center", "scale"))
+combine_numeric_norm = predict(prep_num, combine_numeric)
+
+#移除原本的變數&加入處理後的
+combine[, setdiff(num_vars_names, "Item_Outlet_Sales") := NULL]
+combine <- cbind(combine, combine_numeric_norm)
+
+train = combine[1:nrow(train)]
+test = combine[(nrow(train) + 1):nrow(combine)]
+test[, Item_Outlet_Sales := NULL]
+
+
+```
+##Correlation Variables
+```{R}
+cor_train = cor(train[, -c("Item_Identifier")])
+corrplot(cor_train, method = "pie", type = "lower", tl.cex = 0.9)
+```
+
+#【Linear Regression】
+```{R}
+#建模
+lm = lm(Item_Outlet_Sales ~ ., data = train[,-c("Item_Identifier")])
+
+summary(lm)
+#預測
+submission$Item_Outlet_Sales = predict(lm, test[, -c("Item_Identifier")])
+
+
+```
+```{R}
+library(glmnet)
+#Lasso Regression
+set.seed(1235)
+my_control = trainControl(method = "cv", number = 5)
+Grid = expand.grid(alpha = 1, lambda = seq(0.001, 0.1, by = 0.0002))
+lasso_linear_reg_mod = train(x = train[, -c("Item_Identifier", "Item_Outlet_Sales")], y = train$Item_Outlet_Sales, method ='glmnet', trControl = my_control, tuneGrid = Grid)
+
+
+```
+#【Random Forest】
+```{R}
+library(ranger)
+set.seed(1237)
+my_control = trainControl(method = "cv", number = 5)
+tgrid = expand.grid(
+  .mtry = c(3:10),
+  .splitrule = "variance",
+  .min.node.size = c(10, 15, 20)
+)
+rf_mod = train(x = train[, -c("Item_Identifier", "Item_Outlet_Sales")], 
+               y = train$Item_Outlet_Sales,
+               method = 'ranger',
+               trControl = my_control,
+               tuneGrid = tgrid,
+               num.tree = 400,
+               importance = "permutation")
+
+submission$Item_Outlet_Sales = predict(rf_mod, test[, -c("Item_Identifier")])
+
+write.csv(submission, "rf_submit.csv", row.names = F)
+plot(rf_mod)
+plot(varImp(rf_mod))
+
+
+
+```
+#【XG BOOST】
+```{R}
+param_list = list(objective = 'reg:linear',
+                  eta = 0.01,
+                  gamma = 1,
+                  max_depth = 6,
+                  subsample = 0.8,
+                  colsample_bytree = 0.5)
+dtrain = xgb.DMatrix(data = as.matrix(train[, -c("Item_Identifier", "Item_Outlet_Sales")]), label = train$Item_Outlet_Sales)
+dtest = xgb.DMatrix(data = as.matrix(test[, -c("Item_Identifier")]))
+
+set.seed(1463)
+xgbcv = xgb.cv(params = param_list,
+               data = dtrain,
+               nrounds = 1000,
+               nfold = 5,
+               print_every_n = 10,
+               early_stopping_rounds = 30,
+               maximize = F)
+xgb.model = xgb.train(data = dtrain,
+                      params = param_list,
+                      nrounds = 441)
+
+submission$Item_Outlet_Sales <- predict(xgb.model, data.matrix(test[,-1]))
+
+#Variable importance
+var_imp = xgb.importance(feature_names = setdiff(names(train), c("Item_Identifier", "Item_Outlet_Sales")),
+                         model = xgb.model)
+xgb.plot.importance(var_imp)
+```
+
